@@ -1,0 +1,19 @@
+[project]
+name = "flux2klein-conditioning-toolkit"
+description = "ComfyUI nodes for FLUX.2 Klein conditioning: region-aware text enhancement, sectioned prompt encoding, and corrected reference-latent mixing with multi-reference support."
+version = "0.1.0"
+license = { file = "LICENSE" }
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["torch"]
+
+[project.urls]
+Repository = "https://github.com/xmarre/ComfyUI-Flux2Klein-Conditioning-Toolkit"
+Documentation = "https://github.com/xmarre/ComfyUI-Flux2Klein-Conditioning-Toolkit#readme"
+"Bug Tracker" = "https://github.com/xmarre/ComfyUI-Flux2Klein-Conditioning-Toolkit/issues"
+
+[tool.comfy]
+PublisherId = "xmarre"
+DisplayName = "ComfyUI-Flux2Klein-Conditioning-Toolkit"
+Icon = ""
+includes = []
