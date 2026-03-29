@@ -17,7 +17,7 @@ from .common import (
     set_reference_latents,
 )
 from .ops import apply_contrast, apply_normalize, scale_tensor
-from .reference import mix_reference_latent
+from .reference import mix_reference_latent, rebalance_reference_appearance
 
 
 CATEGORY = "conditioning/flux2klein"
@@ -98,6 +98,15 @@ class Flux2KleinConditioningEnhancer:
                 local_magnitude = dampen_toward_neutral(local_magnitude, 1.0, preserve_original)
                 local_contrast = dampen_toward_neutral(local_contrast, 0.0, preserve_original)
                 local_normalize = dampen_toward_neutral(local_normalize, 0.0, preserve_original)
+
+            if is_edit_mode and preserve_original > 0.0:
+                # In edit mode, the prompt/reference tug-of-war is controlled by
+                # edit_text_weight itself. Interpolating it toward 1.0 leaves the
+                # default path unchanged, so preserve_original can appear inert.
+                # Pulling it toward 0.0 makes preservation observable even when
+                # the user leaves the other enhancer knobs at neutral values.
+                local_edit_weight = dampen_toward_neutral(local_edit_weight, 0.0, preserve_original)
+            elif preserve_mode in {"dampen", "hybrid"} and preserve_original > 0.0:
                 local_edit_weight = dampen_toward_neutral(local_edit_weight, 1.0, preserve_original)
 
             active = apply_contrast(active, local_contrast)
@@ -238,7 +247,7 @@ class Flux2KleinReferenceLatentMixer:
                 "reference_keep": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.05}),
             },
             "optional": {
-                "replace_mode": (["zeros", "gaussian_noise", "channel_mean"], {"default": "zeros"}),
+                "replace_mode": (["zeros", "gaussian_noise", "channel_mean", "lowpass_reference"], {"default": "zeros"}),
                 "channel_mask_start": ("INT", {"default": 0, "min": 0, "max": 4096, "step": 1}),
                 "channel_mask_end": ("INT", {"default": 128, "min": 0, "max": 4096, "step": 1}),
                 "spatial_fade": (["none", "center_out", "edges_out", "top_down", "left_right"], {"default": "none"}),
@@ -302,6 +311,79 @@ class Flux2KleinReferenceLatentMixer:
         return (output,)
 
 
+class Flux2KleinReferenceAppearanceBalancer:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "conditioning": ("CONDITIONING",),
+                "appearance_scale": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 3.0, "step": 0.05}),
+                "detail_scale": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 3.0, "step": 0.05}),
+            },
+            "optional": {
+                "blur_radius": ("INT", {"default": 2, "min": 1, "max": 32, "step": 1}),
+                "channel_mask_start": ("INT", {"default": 0, "min": 0, "max": 4096, "step": 1}),
+                "channel_mask_end": ("INT", {"default": 128, "min": 0, "max": 4096, "step": 1}),
+                "target_reference_index": ("INT", {"default": -1, "min": -1, "max": 64, "step": 1}),
+                "debug": ("BOOLEAN", {"default": False}),
+            },
+        }
+
+    RETURN_TYPES = ("CONDITIONING",)
+    FUNCTION = "balance"
+    CATEGORY = CATEGORY
+
+    def balance(
+        self,
+        conditioning,
+        appearance_scale=1.0,
+        detail_scale=1.0,
+        blur_radius=2,
+        channel_mask_start=0,
+        channel_mask_end=128,
+        target_reference_index=-1,
+        debug=False,
+    ):
+        if not conditioning:
+            return (conditioning,)
+
+        if appearance_scale == 1.0 and detail_scale == 1.0:
+            return (conditioning,)
+
+        output = []
+        for idx, (cond_tensor, meta) in enumerate(conditioning):
+            refs = get_reference_latents(meta)
+            if not refs:
+                output.append((cond_tensor, meta))
+                continue
+
+            new_refs = []
+            for ref_idx, ref in enumerate(refs):
+                if target_reference_index >= 0 and ref_idx != target_reference_index:
+                    new_refs.append(ref.clone())
+                    continue
+                balanced = rebalance_reference_appearance(
+                    ref,
+                    appearance_scale=float(appearance_scale),
+                    detail_scale=float(detail_scale),
+                    blur_radius=int(blur_radius),
+                    channel_start=int(channel_mask_start),
+                    channel_end=int(channel_mask_end),
+                )
+                if debug:
+                    original = ref.to(torch.float32)
+                    modified = balanced.to(torch.float32)
+                    delta = (modified - original).abs().mean().item()
+                    print(
+                        f"[Flux2KleinReferenceAppearanceBalancer] item={idx} ref={ref_idx} "
+                        f"appearance_scale={appearance_scale:.2f} detail_scale={detail_scale:.2f} "
+                        f"blur_radius={blur_radius} mean_delta={delta:.6f}"
+                    )
+                new_refs.append(balanced)
+            output.append((cond_tensor, set_reference_latents(meta, new_refs)))
+        return (output,)
+
+
 class Flux2KleinPromptReferenceBalance:
     @classmethod
     def INPUT_TYPES(cls):
@@ -311,7 +393,7 @@ class Flux2KleinPromptReferenceBalance:
                 "balance": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05}),
             },
             "optional": {
-                "replace_mode": (["zeros", "gaussian_noise", "channel_mean"], {"default": "zeros"}),
+                "replace_mode": (["zeros", "gaussian_noise", "channel_mean", "lowpass_reference"], {"default": "zeros"}),
                 "skip_bos": ("BOOLEAN", {"default": True}),
                 "active_end_override": ("INT", {"default": 0, "min": 0, "max": 512, "step": 1}),
                 "target_reference_index": ("INT", {"default": -1, "min": -1, "max": 64, "step": 1}),
@@ -512,6 +594,7 @@ NODE_CLASS_MAPPINGS = {
     "Flux2KleinConditioningEnhancer": Flux2KleinConditioningEnhancer,
     "Flux2KleinTokenRegionController": Flux2KleinTokenRegionController,
     "Flux2KleinReferenceLatentMixer": Flux2KleinReferenceLatentMixer,
+    "Flux2KleinReferenceAppearanceBalancer": Flux2KleinReferenceAppearanceBalancer,
     "Flux2KleinPromptReferenceBalance": Flux2KleinPromptReferenceBalance,
     "Flux2KleinSectionedTextEncoder": Flux2KleinSectionedTextEncoder,
 }
@@ -520,6 +603,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "Flux2KleinConditioningEnhancer": "FLUX.2 Klein Conditioning Enhancer",
     "Flux2KleinTokenRegionController": "FLUX.2 Klein Token Region Controller",
     "Flux2KleinReferenceLatentMixer": "FLUX.2 Klein Reference Latent Mixer",
+    "Flux2KleinReferenceAppearanceBalancer": "FLUX.2 Klein Reference Appearance Balancer",
     "Flux2KleinPromptReferenceBalance": "FLUX.2 Klein Prompt/Reference Balance",
     "Flux2KleinSectionedTextEncoder": "FLUX.2 Klein Sectioned Text Encoder",
 }
