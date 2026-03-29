@@ -65,3 +65,35 @@ def test_region_controller_dampen_does_not_compound():
         skip_bos=False,
     )
     assert torch.allclose(out[0][0], out[1][0])
+
+
+def test_preserve_original_reduces_prompt_pull_in_edit_mode_even_with_neutral_knobs():
+    node = Flux2KleinConditioningEnhancer()
+    cond = torch.arange(1, 1 + 1 * 8 * 4, dtype=torch.float32).reshape(1, 8, 4)
+    ref = torch.ones(1, 4, 2, 2)
+    meta = {"attention_mask": torch.tensor([[1, 1, 1, 1, 1, 1, 0, 0]]), "reference_latents": [ref]}
+    out, = node.enhance(
+        [(cond.clone(), meta)],
+        preserve_original=0.5,
+        preserve_mode="blend_after",
+        skip_bos=False,
+    )
+    active = out[0][0][:, :6, :]
+    expected = cond[:, :6, :] * 0.75
+    assert torch.allclose(active, expected)
+    assert torch.allclose(out[0][0][:, 6:, :], cond[:, 6:, :])
+
+
+def test_contrast_preserves_average_token_norm_when_magnitude_is_neutral():
+    node = Flux2KleinConditioningEnhancer()
+    torch.manual_seed(0)
+    cond = torch.randn(1, 8, 16)
+    meta = {"attention_mask": torch.tensor([[1, 1, 1, 1, 1, 1, 0, 0]])}
+    out, = node.enhance(
+        [(cond.clone(), meta)],
+        contrast=1.0,
+        skip_bos=False,
+    )
+    before = cond[:, :6, :].norm(dim=-1).mean()
+    after = out[0][0][:, :6, :].norm(dim=-1).mean()
+    assert torch.isclose(before, after, atol=1e-5, rtol=1e-5)

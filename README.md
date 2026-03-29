@@ -15,7 +15,7 @@ Those ideas are worth keeping. The implementation around them is where the clean
 
 ## Scope
 
-This repo provides five nodes:
+This repo provides six nodes:
 
 - **FLUX.2 Klein Conditioning Enhancer**
   - magnitude / contrast / normalization on the active text-token region
@@ -32,6 +32,9 @@ This repo provides five nodes:
 - **FLUX.2 Klein Prompt/Reference Balance**
   - single-slider convenience wrapper
   - balances text gain against reference weakening
+- **FLUX.2 Klein Reference Appearance Balancer**
+  - separates coarse appearance from fine detail in the reference latent
+  - lets you boost low-frequency appearance retention without blindly scaling the full latent
 - **FLUX.2 Klein Sectioned Text Encoder**
   - manual or auto-balanced front/mid/end prompt authoring
   - preserves `attention_mask` into conditioning metadata when available
@@ -58,6 +61,18 @@ Instead, it provides operations that reliably change the latent *content* rather
 - optionally only in selected channels / spatial regions
 
 That gives you a dependable weakening/fading control surface without overstating what raw pre-model latent scaling can do.
+
+
+### 3.5. Washed-out edit colors need reference-stream control, not just text contrast
+
+FLUX.2 Klein image-edit runs often preserve layout more reliably than coarse appearance. When that happens, pushing harder on text conditioning can make the edit more obedient while still letting source chroma wash out.
+
+The root problem is that a raw reference latent is doing multiple jobs at once:
+
+- coarse appearance / illumination / large color fields
+- local structural lock / edge detail
+
+If you only have whole-latent weakening or text-side gain, loosening the edit path tends to throw away both together. This rebuild now includes a reference-appearance balancer and a `lowpass_reference` mixer mode so you can relax detail lock while keeping more of the coarse appearance signal.
 
 ### 4. Multi-reference support is first-class
 
@@ -117,9 +132,9 @@ Use this when you want broad prompt-following adjustment on the active token reg
 Parameters:
 
 - `magnitude`: overall gain on active user tokens
-- `contrast`: sharpens or softens token-to-token differences
+- `contrast`: sharpens or softens token-to-token differences while preserving average token energy
 - `normalize_strength`: equalizes token norms
-- `preserve_original`: blends some original conditioning back in
+- `preserve_original`: blends some original conditioning back in, and in edit mode also reduces prompt pull against the reference path
 - `preserve_mode`:
   - `blend_after`: apply edits, then interpolate with original
   - `dampen`: reduce edit strength before applying edits
@@ -145,9 +160,30 @@ Parameters:
   - `zeros`: strongest weakening / removal
   - `gaussian_noise`: loosens structure while keeping a noisy latent-like signal
   - `channel_mean`: removes local spatial structure while keeping coarse channel statistics
+  - `lowpass_reference`: replaces removed content with a blurred copy of the original reference, which is often better for retaining broad color/illumination cues during edits
 - `channel_mask_start` / `channel_mask_end`: restrict effect to latent channels
 - `spatial_fade` / `spatial_fade_strength`: fade only part of the spatial field
 - `target_reference_index`: `-1` = all references
+
+### FLUX.2 Klein Reference Appearance Balancer
+
+Use this when Klein keeps structure but washes out the source image's broad color/appearance cues during an edit.
+
+Parameters:
+
+- `appearance_scale`: scales the blurred / low-frequency part of the reference latent
+- `detail_scale`: scales the residual / high-frequency part of the reference latent
+- `blur_radius`: controls how aggressively the latent is split into coarse appearance vs detail
+- `channel_mask_start` / `channel_mask_end`: restrict effect to selected latent channels
+- `target_reference_index`: `-1` = all references
+
+A practical starting point for washed-out edits is:
+
+- `appearance_scale = 1.15 to 1.35`
+- `detail_scale = 0.85 to 1.00`
+- `blur_radius = 2 to 4`
+
+This is intentionally more targeted than just increasing text contrast or globally scaling the whole reference latent.
 
 ### FLUX.2 Klein Prompt/Reference Balance
 
@@ -155,9 +191,13 @@ This is a convenience node.
 
 - `balance = 0.0`: mute prompt text, keep full reference
 - `balance = 0.5`: keep both
-- `balance = 1.0`: keep full prompt text, remove reference
+- `balance = 1.0`: keep full prompt text, drive `reference_keep` to minimum
 
 Unlike the source repo, the reference side is implemented via reference mixing, not raw latent scaling.
+
+That means `balance = 1.0` is only a true "reference off" endpoint when `replace_mode="zeros"`.
+
+With `replace_mode="lowpass_reference"`, the weakened path still keeps a blurred coarse reference signal, including broad color / illumination structure and some channel statistics. Use that mode when you want to loosen detail lock without fully discarding appearance, not when you want the Prompt/Reference Balance slider to eliminate reference influence.
 
 ### FLUX.2 Klein Sectioned Text Encoder
 
