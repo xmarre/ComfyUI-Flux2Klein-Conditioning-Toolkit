@@ -191,9 +191,13 @@ This is a convenience node.
 
 - `balance = 0.0`: mute prompt text, keep full reference
 - `balance = 0.5`: keep both
-- `balance = 1.0`: keep full prompt text, remove reference
+- `balance = 1.0`: keep full prompt text, drive `reference_keep` to minimum
 
 Unlike the source repo, the reference side is implemented via reference mixing, not raw latent scaling.
+
+That means `balance = 1.0` is only a true "reference off" endpoint when `replace_mode="zeros"`.
+
+With `replace_mode="lowpass_reference"`, the weakened path still keeps a blurred coarse reference signal, including broad color / illumination structure and some channel statistics. Use that mode when you want to loosen detail lock without fully discarding appearance, not when you want the Prompt/Reference Balance slider to eliminate reference influence.
 
 ### FLUX.2 Klein Sectioned Text Encoder
 
